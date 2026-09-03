@@ -16,8 +16,8 @@ namespace Worker
         {
             try
             {
-                var pgsql = OpenDbConnection("Server=db;Username=postgres;Password=postgres;");
-                var redisConn = OpenRedisConnection("redis");
+                var pgsql = OpenDbConnection(GetPostgresConnectionString());
+                var redisConn = OpenRedisConnection();
                 var redis = redisConn.GetDatabase();
 
                 // Keep alive is not implemented in Npgsql yet. This workaround was recommended:
@@ -34,7 +34,7 @@ namespace Worker
                     // Reconnect redis if down
                     if (redisConn == null || !redisConn.IsConnected) {
                         Console.WriteLine("Reconnecting Redis");
-                        redisConn = OpenRedisConnection("redis");
+                        redisConn = OpenRedisConnection();
                         redis = redisConn.GetDatabase();
                     }
                     string json = redis.ListLeftPopAsync("votes").Result;
@@ -46,7 +46,7 @@ namespace Worker
                         if (!pgsql.State.Equals(System.Data.ConnectionState.Open))
                         {
                             Console.WriteLine("Reconnecting DB");
-                            pgsql = OpenDbConnection("Server=db;Username=postgres;Password=postgres;");
+                            pgsql = OpenDbConnection(GetPostgresConnectionString());
                         }
                         else
                         { // Normal +1 vote requested
@@ -102,20 +102,47 @@ namespace Worker
             return connection;
         }
 
-        private static ConnectionMultiplexer OpenRedisConnection(string hostname)
+        private static string GetPostgresConnectionString()
         {
-            // Use IP address to workaround https://github.com/StackExchange/StackExchange.Redis/issues/410
-            var ipAddress = GetIp(hostname);
-            Console.WriteLine($"Found redis at {ipAddress}");
+            var host = Environment.GetEnvironmentVariable("POSTGRES_HOST") ?? "db";
+            var user = Environment.GetEnvironmentVariable("POSTGRES_USER") ?? "postgres";
+            var password = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD") ?? "postgres";
+            var database = Environment.GetEnvironmentVariable("POSTGRES_DB") ?? "postgres";
+            var port = Environment.GetEnvironmentVariable("POSTGRES_PORT") ?? "5432";
+            var sslMode = Environment.GetEnvironmentVariable("POSTGRES_SSLMODE");
+            var connectionString = $"Server={host};Port={port};Username={user};Password={password};Database={database}";
+            if (string.Equals(sslMode, "require", StringComparison.OrdinalIgnoreCase))
+            {
+                connectionString += ";SSL Mode=Require;Trust Server Certificate=true";
+            }
+            return connectionString;
+        }
+
+        private static ConnectionMultiplexer OpenRedisConnection()
+        {
+            var redisUrl = Environment.GetEnvironmentVariable("REDIS_URL");
+            var hostname = Environment.GetEnvironmentVariable("REDIS_HOST") ?? "redis";
 
             while (true)
             {
                 try
                 {
                     Console.Error.WriteLine("Connecting to redis");
+                    if (!string.IsNullOrEmpty(redisUrl))
+                    {
+                        return ConnectionMultiplexer.Connect(redisUrl);
+                    }
+                    // Use IP address to workaround https://github.com/StackExchange/StackExchange.Redis/issues/410
+                    var ipAddress = GetIp(hostname);
+                    Console.WriteLine($"Found redis at {ipAddress}");
                     return ConnectionMultiplexer.Connect(ipAddress);
                 }
                 catch (RedisConnectionException)
+                {
+                    Console.Error.WriteLine("Waiting for redis");
+                    Thread.Sleep(1000);
+                }
+                catch (SocketException)
                 {
                     Console.Error.WriteLine("Waiting for redis");
                     Thread.Sleep(1000);

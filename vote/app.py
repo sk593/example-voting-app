@@ -16,9 +16,42 @@ gunicorn_error_logger = logging.getLogger('gunicorn.error')
 app.logger.handlers.extend(gunicorn_error_logger.handlers)
 app.logger.setLevel(logging.INFO)
 
+def connect_redis():
+    url = os.getenv('REDIS_URL')
+    if url:
+        scheme = url.split(',', 1)[0]
+        if '://' in scheme:
+            return Redis.from_url(url, socket_timeout=5)
+        hostport, *options = url.split(',')
+        host, _, port = hostport.partition(':')
+        params = {}
+        for option in options:
+            if '=' not in option:
+                continue
+            key, value = option.split('=', 1)
+            params[key.strip().lower()] = value.strip()
+        return Redis(
+            host=host,
+            port=int(port or 6379),
+            password=params.get('password') or None,
+            ssl=params.get('ssl', '').lower() in ('true', '1', 'yes'),
+            db=0,
+            socket_timeout=5,
+        )
+    password = os.getenv('REDIS_PASSWORD') or None
+    return Redis(
+        host=os.getenv('REDIS_HOST', 'redis'),
+        port=int(os.getenv('REDIS_PORT', '6379')),
+        password=password,
+        ssl=os.getenv('REDIS_SSL', '').lower() in ('true', '1', 'yes'),
+        db=0,
+        socket_timeout=5,
+    )
+
+
 def get_redis():
     if not hasattr(g, 'redis'):
-        g.redis = Redis(host="redis", db=0, socket_timeout=5)
+        g.redis = connect_redis()
     return g.redis
 
 @app.route("/", methods=['POST','GET'])
